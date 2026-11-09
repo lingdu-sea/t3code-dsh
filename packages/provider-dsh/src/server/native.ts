@@ -81,15 +81,7 @@ export class NativeDshRuntime {
           : { cancelled: true },
     });
     // Install the approval handler before the initialize handshake.
-    this.harness.client.start();
-    this.harness.client.onRequest(async (method, params) => {
-      if (method !== "approval/request") {
-        throw new Error(`Unsupported DSH SDK request: ${method}`);
-      }
-      // Never auto-approve. Any callback failure is rejected by SDK transport.
-      if (!this.callbacks.onApproval) return { outcome: "rejected" };
-      return mapDshApprovalToSdk(await this.callbacks.onApproval(params as DshApprovalRequest));
-    });
+
   }
 
   /** Stable SDK identity for the T3 provider thread. */
@@ -103,6 +95,21 @@ export class NativeDshRuntime {
 
   async start(): Promise<void> {
     if (this.closed) throw new Error("DSH runtime is closed.");
+    // Side effects belong in start, never in a constructor. The SDK may
+    // replace its client after a failed handshake; register on every start.
+    this.harness.client.start();
+    this.harness.client.onRequest(async (method, params) => {
+      if (method !== "approval/request") {
+        throw new Error("Unsupported DSH native request");
+      }
+      if (!this.callbacks.onApproval) return { outcome: "rejected" };
+      const request = params as unknown as DshApprovalRequest;
+      try {
+        return mapDshApprovalToSdk(await this.callbacks.onApproval(request));
+      } catch {
+        return { outcome: "rejected" };
+      }
+    });
     await this.harness.start();
   }
 
