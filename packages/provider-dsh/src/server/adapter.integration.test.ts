@@ -1,6 +1,5 @@
 // This tests the actual T3 ProviderAdapterV2 event stream over a published DSH
 // SDK subprocess protocol. It does not perform a real model inference.
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- Local offline fixture URL.
 import { fileURLToPath } from "node:url";
 
 import { assert, describe, it } from "@effect/vitest";
