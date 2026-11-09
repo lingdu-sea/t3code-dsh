@@ -519,7 +519,7 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
       const finish = Effect.fn("DshAdapter.finish")(function* (
         args: ProviderAdapter.ProviderAdapterV2TurnInput,
         turn: OrchestrationV2ProviderTurn,
-        outcome: "completed" | "failed",
+        outcome: "completed" | "failed" | "cancelled" | "interrupted",
         answer: string,
         detail?: string,
       ) {
@@ -592,9 +592,9 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
         const settled = { ...turn, status: outcome, completedAt: ended } satisfies OrchestrationV2ProviderTurn;
         turns.push(settled);
         yield* emit({ type: "provider_turn.updated", driver: DSH_PROVIDER, threadId: args.threadId, providerTurn: settled });
-        thread = { ...thread, status: outcome === "completed" ? "idle" : "error", updatedAt: ended };
+        thread = { ...thread, status: outcome === "failed" ? "error" : "idle", updatedAt: ended };
         yield* emit({ type: "provider_thread.updated", driver: DSH_PROVIDER, providerThread: thread });
-        yield* setSession(outcome === "completed" ? "ready" : "error");
+        yield* setSession(outcome === "failed" ? "error" : "ready");
         if (outcome === "failed") {
           const ordinal = args.providerTurnOrdinal * 100 + 99;
           const failure = makeProviderFailure({ class: "provider_error", message: detail ?? "DSH run failed." });
@@ -617,7 +617,7 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
           yield* emit({
             type: "turn.terminal", driver: DSH_PROVIDER,
             providerThreadId: thread.id, providerTurnId: turn.id,
-            runOrdinal: args.runOrdinal, status: "completed",
+            runOrdinal: args.runOrdinal, status: outcome,
             failure: null, threadDisposition: "reusable",
           });
         }
@@ -677,7 +677,7 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
             Effect.matchEffect({
               onFailure: (error) => finish(args, turn, "failed", "", error.message),
               onSuccess: (result) => finish(
-                args, turn, classifyDshTerminal(result.finishReason) === "completed" ? "completed" : "failed",
+                args, turn, classifyDshTerminal(result.finishReason),
                 result.finalResponse, result.finishReason ?? undefined,
               ),
             }),
