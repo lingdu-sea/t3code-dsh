@@ -34,6 +34,8 @@
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "vite-plus": "catalog:",
-    "@types/node": "catalog:"
+    "@types/node": "catalog:",
+    "@effect/platform-node": "catalog:",
+    "@t3tools/provider-testing": "workspace:*"
   }
 }
