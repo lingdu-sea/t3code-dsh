@@ -15,6 +15,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - hash thread identity for persistent home
 import { createHash } from "node:crypto";
 import type { SdkUserQuestionRequest, SdkUserQuestionResult } from "@deepseek-ai/dsh-sdk-client";
 import { mapT3AnswersToDsh } from "./questionMapping.ts";
@@ -144,13 +145,15 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: options.instanceId,
     driver: DSH_PROVIDER,
-    getCapabilities: () => Effect.succeed(DSH_CAPABILITIES),
-    planSelectionTransition: (input) => Effect.succeed(
+    getCapabilities: Effect.fn("DshAdapter.getCapabilities")(() => Effect.succeed(DSH_CAPABILITIES)),
+    planSelectionTransition: Effect.fn("DshAdapter.planSelectionTransition")((input) => Effect.succeed(
       input.current.model === input.target.model
         ? { type: "apply_on_next_turn" as const }
         : { type: "restart_session" as const },
-    ),
+    )),
     openSession: Effect.fn("DshAdapter.openSession")(function* (input) {
+      const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
+      const scope = yield* Effect.scope;
       if (!options.settings.enabled) return yield* unsupported("DSH is disabled");
       if (input.runtimePolicy.runtimeMode !== "approval-required")
         return yield* unsupported("This preview supports Supervised mode only");
@@ -205,7 +208,7 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
       let assistantWasEmitted = false;
       let nativeEventError: unknown = undefined;
       let nativeEventChain: Promise<void> = Promise.resolve();
-      const processNativeEvent = (normalized: NativeDshEvent) => Effect.gen(function* () {
+      const processNativeEvent = Effect.fn("DshAdapter.processNativeEvent")(function* (normalized: NativeDshEvent) {
         const owner = activeTurn;
         const current = thread;
         if (!owner || !current) return;
@@ -306,7 +309,7 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
         // Serializes dependent tool-start/tool-result events and ensures the
         // terminal waits for projection. A conversion failure fails the turn.
         nativeEventChain = nativeEventChain.then(() =>
-          Effect.runPromise(processNativeEvent(normalized)),
+          runPromise(processNativeEvent(normalized)),
         ).catch((error: unknown) => {
           nativeEventError = error;
         });
@@ -318,12 +321,12 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
           return "rejected";
         }
         try {
-          const requestId = await Effect.runPromise(ids.allocate.runtimeRequest({
+          const requestId = await runPromise(ids.allocate.runtimeRequest({
             driver: DSH_PROVIDER,
             providerTurnId: owner.turn.id,
             ...(incoming.callId ? { nativeRequestId: incoming.callId } : {}),
           }));
-          const createdAt = await Effect.runPromise(DateTime.now);
+          const createdAt = await runPromise(DateTime.now);
           const nodeId = ids.derive.approvalNode({ requestId });
           const request: OrchestrationV2RuntimeRequest = {
             id: requestId, nodeId, providerTurnId: owner.turn.id,
@@ -360,10 +363,10 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
           let finish!: (choice: DshApprovalDecision) => void;
           const answer = new Promise<DshApprovalDecision>((resolve) => { finish = resolve; });
           pendingApprovals.set(requestId, { request, node, item, resolve: finish });
-          await Effect.runPromise(emit({ type: "runtime_request.updated", driver: DSH_PROVIDER, threadId: owner.args.threadId, runtimeRequest: request }));
-          await Effect.runPromise(emit({ type: "node.updated", driver: DSH_PROVIDER, node }));
-          await Effect.runPromise(emit({ type: "turn_item.updated", driver: DSH_PROVIDER, turnItem: item }));
-          if (activeTurn === owner) await Effect.runPromise(setSession("waiting"));
+          await runPromise(emit({ type: "runtime_request.updated", driver: DSH_PROVIDER, threadId: owner.args.threadId, runtimeRequest: request }));
+          await runPromise(emit({ type: "node.updated", driver: DSH_PROVIDER, node }));
+          await runPromise(emit({ type: "turn_item.updated", driver: DSH_PROVIDER, turnItem: item }));
+          if (activeTurn === owner) await runPromise(setSession("waiting"));
           return await answer;
         } catch {
           return "rejected";
@@ -380,11 +383,11 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
           return { cancelled: true };
         }
         try {
-          const requestId = await Effect.runPromise(ids.allocate.runtimeRequest({
+          const requestId = await runPromise(ids.allocate.runtimeRequest({
             driver: DSH_PROVIDER, providerTurnId: owner.turn.id,
             nativeRequestId: incoming.requestId,
           }));
-          const createdAt = await Effect.runPromise(DateTime.now);
+          const createdAt = await runPromise(DateTime.now);
           const nodeId = ids.derive.approvalNode({ requestId });
           const request: OrchestrationV2RuntimeRequest = {
             id: requestId, nodeId, providerTurnId: owner.turn.id,
@@ -432,10 +435,10 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
           };
           context.signal.addEventListener("abort", onAbort, { once: true });
           try {
-            await Effect.runPromise(emit({ type: "runtime_request.updated", driver: DSH_PROVIDER, threadId: owner.args.threadId, runtimeRequest: request }));
-            await Effect.runPromise(emit({ type: "node.updated", driver: DSH_PROVIDER, node }));
-            await Effect.runPromise(emit({ type: "turn_item.updated", driver: DSH_PROVIDER, turnItem: item }));
-            if (activeTurn === owner) await Effect.runPromise(setSession("waiting"));
+            await runPromise(emit({ type: "runtime_request.updated", driver: DSH_PROVIDER, threadId: owner.args.threadId, runtimeRequest: request }));
+            await runPromise(emit({ type: "node.updated", driver: DSH_PROVIDER, node }));
+            await runPromise(emit({ type: "turn_item.updated", driver: DSH_PROVIDER, turnItem: item }));
+            if (activeTurn === owner) await runPromise(setSession("waiting"));
             return await answer;
           } finally {
             context.signal.removeEventListener("abort", onAbort);
@@ -444,8 +447,7 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
           return { cancelled: true };
         }
       };
-      const setSession = (status: OrchestrationV2ProviderSession["status"]) =>
-        Effect.gen(function* () {
+      const setSession = Effect.fn("DshAdapter.setSession")(function* (status: OrchestrationV2ProviderSession["status"]) {
           session = { ...session, status, updatedAt: yield* DateTime.now };
           yield* emit({ type: "provider_session.updated", driver: DSH_PROVIDER, providerSession: session });
         });
@@ -496,7 +498,7 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
         }
         nativeId = resumeId ?? native.createSessionId();
         const timestamp = yield* DateTime.now;
-        thread = existing
+        const readyThread: OrchestrationV2ProviderThread = existing
           ? { ...existing, providerSessionId: input.providerSessionId,
               nativeThreadRef: { driver: DSH_PROVIDER, nativeId, strength: "strong" },
               status: "idle", updatedAt: timestamp }
@@ -507,14 +509,15 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
               }),
               driver: DSH_PROVIDER, providerInstanceId: options.instanceId,
               providerSessionId: input.providerSessionId, appThreadId: args.threadId,
-              ownerNodeId: null, nativeThreadRef: { nativeId, strength: "strong" },
+              ownerNodeId: null, nativeThreadRef: { driver: DSH_PROVIDER, nativeId, strength: "strong" },
               nativeConversationHeadRef: null, status: "idle",
               firstRunOrdinal: null, lastRunOrdinal: null,
               handoffIds: [], forkedFrom: null, pendingBackgroundTasks: [],
               createdAt: timestamp, updatedAt: timestamp,
             };
-        yield* emit({ type: "provider_thread.updated", driver: DSH_PROVIDER, providerThread: thread });
-        return thread;
+        thread = readyThread;
+        yield* emit({ type: "provider_thread.updated", driver: DSH_PROVIDER, providerThread: readyThread });
+        return readyThread;
       });
       const finish = Effect.fn("DshAdapter.finish")(function* (
         args: ProviderAdapter.ProviderAdapterV2TurnInput,
@@ -534,7 +537,7 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
             id: messageId, threadId: args.threadId, runId: args.runId,
             nodeId, role: "assistant", text: answer, attachments: [],
             streaming: false, createdBy: "agent", creationSource: "provider",
-            createdAt: turn.startedAt, updatedAt: ended,
+            createdAt: turn.startedAt ?? ended, updatedAt: ended,
           };
           messages.push(message);
           yield* emit({ type: "message.updated", driver: DSH_PROVIDER, message });
@@ -637,7 +640,7 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
           runtimePolicy: args.runtimePolicy ?? input.runtimePolicy,
           existingProviderThread: args.providerThread,
         }),
-        startTurn: (args) => Effect.gen(function* () {
+        startTurn: Effect.fn("DshAdapter.startTurn")(function* (args) {
           if (activeTurn || !thread || !native || !nativeId || args.providerThread.id !== thread.id)
             return yield* unsupported("DSH session is absent or busy");
           if (args.message.attachments.length)
@@ -681,12 +684,12 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
                 result.finalResponse, result.finishReason ?? undefined,
               ),
             }),
-            Effect.forkScoped,
+            Effect.forkIn(scope),
           );
         }),
         steerTurn: () => Effect.fail(unsupported("DSH steering is unavailable")),
         interruptTurn: () => Effect.fail(unsupported("DSH per-session cancellation is unavailable")),
-        respondToRuntimeRequest: (reply) => Effect.gen(function* () {
+        respondToRuntimeRequest: Effect.fn("DshAdapter.respondToRuntimeRequest")(function* (reply) {
           const question = pendingQuestions.get(reply.requestId);
           if (question) {
             pendingQuestions.delete(reply.requestId);
