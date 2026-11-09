@@ -8,11 +8,11 @@ export const DshSettings = makeProviderSettingsSchema({
     Schema.withDecodingDefault(Effect.succeed(false)),
     Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
   ),
-  binaryPath: makeBinaryPathSetting("dsh").pipe(
+  binaryPath: makeBinaryPathSetting("").pipe(
     Schema.annotateKey({
-      title: "DSH executable",
-      description: "DSH CLI on the T3 Code server. The native adapter launches the SDK profile, not ACP.",
-      providerSettingsForm: { placeholder: "dsh", clearWhenEmpty: "omit" },
+      title: "DSH Node entry (optional)",
+      description: "Advanced: absolute path to a built dsh Node CLI entry module. Leave empty to use the SDK-matched DSH runtime.",
+      providerSettingsForm: { placeholder: "/absolute/path/to/dsh/dist/bin.js", clearWhenEmpty: "omit" },
     }),
   ),
   provider: TrimmedString.pipe(
