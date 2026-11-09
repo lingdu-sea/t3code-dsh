@@ -26,9 +26,13 @@ jobs:
           version: '12.14.0'
           run_install: false
       - name: Install focused workspace dependencies
-        run: pnpm install --no-frozen-lockfile --ignore-scripts --filter '@t3tools/provider-dsh...' --filter '@t3tools/monorepo'
+        run: pnpm install --frozen-lockfile --ignore-scripts --filter '@t3tools/provider-dsh...' --filter '@t3tools/client-runtime...' --filter 't3...' 
       - name: Typecheck native provider
         run: pnpm --filter '@t3tools/provider-dsh' typecheck
+      - name: Typecheck T3 shared client registry
+        run: pnpm --filter '@t3tools/client-runtime' typecheck
+      - name: Typecheck T3 server integration
+        run: pnpm --filter 't3' typecheck
       - name: Native provider unit tests
         run: pnpm --filter '@t3tools/provider-dsh' test
       - name: Check dependency lockfile drift
@@ -38,5 +42,6 @@ jobs:
           if git diff --quiet -- pnpm-lock.yaml; then
             echo 'Lockfile is current.'
           else
-            echo '::warning::pnpm-lock.yaml needs regeneration and commit before merging.'
+            echo '::error::pnpm-lock.yaml changed under frozen dependency resolution.'
+            exit 1
           fi
