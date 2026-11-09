@@ -22,6 +22,7 @@ import { DshSettings } from "../settings.ts";
 import { makeDshAdapterV2 } from "./adapter.ts";
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-dsh-runtime.mjs", import.meta.url));
+const TEST_ENV: NodeJS.ProcessEnv = { PATH: process.env.PATH ?? "" };
 const testLayer = Layer.mergeAll(
   NodeServices.layer,
   IdAllocator.layer,
@@ -46,7 +47,7 @@ const makeHarness = Effect.fnUntraced(function* (identity: string) {
   const adapter = yield* makeDshAdapterV2({
     instanceId,
     settings,
-    environment: { PATH: process.env.PATH ?? "" },
+    environment: TEST_ENV,
   });
   const runtime = yield* adapter.openSession({
     threadId, providerSessionId: ProviderSessionId.make("dsh-session-" + identity),
@@ -206,7 +207,7 @@ describe("DSH ProviderAdapterV2 -> native SDK offline integration", () => {
     Effect.gen(function* () {
       const h = yield* makeHarness("capabilities");
       const capabilities = yield* (yield* makeDshAdapterV2({
-        instanceId: h.instanceId, settings, environment: { PATH: process.env.PATH ?? "" },
+        instanceId: h.instanceId, settings, environment: TEST_ENV,
       })).getCapabilities();
       assert.isFalse(capabilities.turns.supportsInterrupt);
       assert.isFalse(capabilities.threads.canRollbackThread);
