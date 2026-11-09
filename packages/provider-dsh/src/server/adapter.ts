@@ -34,7 +34,7 @@ export const DSH_CAPABILITIES = {
   },
   threads: {
     canCreateEmptyThread: true,
-    canReadThreadSnapshot: true,
+    canReadThreadSnapshot: false,
     canRollbackThread: false,
     canForkThread: false,
     canForkFromTurn: false,
@@ -191,14 +191,14 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
         });
         yield* Effect.tryPromise({
           try: () => native!.start(),
-          catch: (cause) => unsupported("Could not initialize DSH native SDK: " + String(cause)),
+          catch: (cause) => unsupported("Could not initialize DSH native SDK"),
         });
         const existing = args.existingProviderThread;
         const resumeId = existing?.nativeThreadRef?.nativeId ?? input.initialNativeThreadId;
         if (resumeId) {
           yield* Effect.tryPromise({
             try: () => native!.resumeSession(resumeId),
-            catch: (cause) => unsupported("DSH session restore failed: " + String(cause)),
+            catch: (cause) => unsupported("DSH session restore failed"),
           });
         }
         nativeId = resumeId ?? native.createSessionId();
@@ -338,7 +338,7 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
           yield* setSession("running");
           yield* Effect.tryPromise({
             try: () => native!.run(nativeId!, args.message.text),
-            catch: (cause) => unsupported("DSH run failed: " + String(cause)),
+            catch: (cause) => unsupported("DSH native execution failed"),
           }).pipe(
             Effect.matchEffect({
               onFailure: (error) => finish(args, turn, "failed", "", error.message),
