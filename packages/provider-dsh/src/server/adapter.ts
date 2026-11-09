@@ -16,6 +16,8 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import { createHash } from "node:crypto";
+import type { SdkUserQuestionRequest, SdkUserQuestionResult } from "@deepseek-ai/dsh-sdk-client";
+import { mapT3AnswersToDsh } from "./questionMapping.ts";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -85,7 +87,7 @@ export const DSH_CAPABILITIES = {
     emitsPlanUpdated: false,
     emitsTodoList: false,
     emitsProposedPlan: false,
-    supportsStructuredQuestions: false,
+    supportsStructuredQuestions: true,
     planDeltasHaveItemIds: false,
   },
   subagents: {
@@ -176,6 +178,14 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
         readonly resolve: (choice: DshApprovalDecision) => void;
       };
       const pendingApprovals = new Map<RuntimeRequestId, Approval>();
+      type Question = {
+        readonly incoming: SdkUserQuestionRequest;
+        readonly request: OrchestrationV2RuntimeRequest;
+        readonly node: OrchestrationV2ExecutionNode;
+        readonly item: OrchestrationV2TurnItem;
+        readonly resolve: (answer: SdkUserQuestionResult) => void;
+      };
+      const pendingQuestions = new Map<RuntimeRequestId, Question>();
       let requestOrdinal = 0;
       // Called from the native JSON-RPC host request handler. All human
       // approvals are one-shot, and no subagent approval is silently granted.
@@ -237,6 +247,81 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
           return "rejected";
         }
       };
+      const onQuestion = async (
+        incoming: SdkUserQuestionRequest,
+        context: { readonly signal: AbortSignal },
+      ): Promise<SdkUserQuestionResult> => {
+        const owner = activeTurn;
+        const currentThread = thread;
+        if (!owner || !currentThread || !nativeId ||
+            incoming.sessionId !== nativeId || context.signal.aborted) {
+          return { cancelled: true };
+        }
+        try {
+          const requestId = await Effect.runPromise(ids.allocate.runtimeRequest({
+            driver: DSH_PROVIDER, providerTurnId: owner.turn.id,
+            nativeRequestId: incoming.requestId,
+          }));
+          const createdAt = await Effect.runPromise(DateTime.now);
+          const nodeId = ids.derive.approvalNode({ requestId });
+          const request: OrchestrationV2RuntimeRequest = {
+            id: requestId, nodeId, providerTurnId: owner.turn.id,
+            nativeRequestRef: { driver: DSH_PROVIDER, nativeId: incoming.requestId, strength: "strong" },
+            kind: "user_input", status: "pending",
+            responseCapability: { type: "live", providerSessionId: input.providerSessionId },
+            createdAt, resolvedAt: null,
+          };
+          const node: OrchestrationV2ExecutionNode = {
+            id: nodeId, threadId: owner.args.threadId, runId: owner.args.runId,
+            parentNodeId: owner.args.rootNodeId, rootNodeId: owner.args.rootNodeId,
+            kind: "user_input_request", status: "waiting", countsForRun: false,
+            providerThreadId: currentThread.id, providerTurnId: owner.turn.id,
+            nativeItemRef: null, runtimeRequestId: requestId, checkpointScopeId: null,
+            startedAt: createdAt, completedAt: null,
+          };
+          const item: OrchestrationV2TurnItem = {
+            id: ids.derive.approvalTurnItem({ requestId }), nodeId,
+            threadId: owner.args.threadId, runId: owner.args.runId,
+            providerThreadId: currentThread.id, providerTurnId: owner.turn.id,
+            nativeItemRef: null, parentItemId: null,
+            ordinal: owner.args.providerTurnOrdinal * 100 + 50 + (++requestOrdinal),
+            startedAt: createdAt, updatedAt: createdAt,
+            status: "waiting", completedAt: null, title: null,
+            type: "user_input_request", requestId,
+            questions: incoming.questions.map((q, i) => ({
+              id: q.id.trim() || "question-" + i,
+              header: q.header?.trim() || "Question",
+              question: q.question.trim() || "Please provide input",
+              options: (q.options ?? []).map((choice) => ({
+                label: choice.label,
+                description: choice.description?.trim() || choice.label,
+              })),
+              multiSelect: q.multiSelect ?? false, allowCustomAnswer: true, required: true,
+            })),
+          };
+          let finish!: (value: SdkUserQuestionResult) => void;
+          const answer = new Promise<SdkUserQuestionResult>((resolve) => { finish = resolve; });
+          const pending: Question = { incoming, request, node, item, resolve: finish };
+          pendingQuestions.set(requestId, pending);
+          const onAbort = () => {
+            if (pendingQuestions.get(requestId) !== pending) return;
+            pendingQuestions.delete(requestId);
+            finish({ cancelled: true });
+          };
+          context.signal.addEventListener("abort", onAbort, { once: true });
+          try {
+            await Effect.runPromise(emit({ type: "runtime_request.updated", driver: DSH_PROVIDER, threadId: owner.args.threadId, runtimeRequest: request }));
+            await Effect.runPromise(emit({ type: "node.updated", driver: DSH_PROVIDER, node }));
+            await Effect.runPromise(emit({ type: "turn_item.updated", driver: DSH_PROVIDER, turnItem: item }));
+            if (activeTurn === owner) await Effect.runPromise(setSession("waiting"));
+            return await answer;
+          } finally {
+            context.signal.removeEventListener("abort", onAbort);
+          }
+        } catch {
+          return { cancelled: true };
+        }
+      };
       const setSession = (status: OrchestrationV2ProviderSession["status"]) =>
         Effect.gen(function* () {
           session = { ...session, status, updatedAt: yield* DateTime.now };
@@ -245,6 +330,8 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
       yield* Effect.addFinalizer(() => Effect.promise(async () => {
         for (const pending of pendingApprovals.values()) pending.resolve("cancelled");
         pendingApprovals.clear();
+        for (const pending of pendingQuestions.values()) pending.resolve({ cancelled: true });
+        pendingQuestions.clear();
         await native?.close();
       }));
       const ensure = Effect.fn("DshAdapter.ensureThread")(function* (
@@ -272,7 +359,7 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
           model: args.modelSelection.model === "default"
             ? options.settings.model : args.modelSelection.model,
           env: options.environment,
-        }, { onApproval });
+        }, { onApproval, onQuestion });
         yield* Effect.tryPromise({
           try: () => native!.start(),
           catch: (cause) => unsupported("Could not initialize DSH native SDK"),
@@ -351,6 +438,22 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
         for (const [requestId, pending] of pendingApprovals) {
           pendingApprovals.delete(requestId);
           pending.resolve("cancelled");
+          yield* emit({ type: "runtime_request.updated", driver: DSH_PROVIDER,
+            threadId: args.threadId,
+            runtimeRequest: { ...pending.request, status: "cancelled",
+              resolvedAt: ended, responseCapability: {
+                type: "not_resumable", reason: "DSH turn has ended",
+              } },
+          });
+          yield* emit({ type: "node.updated", driver: DSH_PROVIDER,
+            node: { ...pending.node, status: "cancelled", completedAt: ended } });
+          yield* emit({ type: "turn_item.updated", driver: DSH_PROVIDER,
+            turnItem: { ...pending.item, status: "cancelled",
+              completedAt: ended, updatedAt: ended } });
+        }
+        for (const [requestId, pending] of pendingQuestions) {
+          pendingQuestions.delete(requestId);
+          pending.resolve({ cancelled: true });
           yield* emit({ type: "runtime_request.updated", driver: DSH_PROVIDER,
             threadId: args.threadId,
             runtimeRequest: { ...pending.request, status: "cancelled",
@@ -454,8 +557,34 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
         steerTurn: () => Effect.fail(unsupported("DSH steering is unavailable")),
         interruptTurn: () => Effect.fail(unsupported("DSH per-session cancellation is unavailable")),
         respondToRuntimeRequest: (reply) => Effect.gen(function* () {
+          const question = pendingQuestions.get(reply.requestId);
+          if (question) {
+            pendingQuestions.delete(reply.requestId);
+            const resolvedAt = yield* DateTime.now;
+            const response = mapT3AnswersToDsh(question.incoming.questions, reply.answers);
+            const cancelled = "cancelled" in response;
+            yield* emit({ type: "runtime_request.updated", driver: DSH_PROVIDER,
+              threadId: input.threadId,
+              runtimeRequest: { ...question.request, status: cancelled ? "cancelled" : "resolved",
+                resolvedAt, ...(reply.answers ? { answers: reply.answers } : {}),
+                responseCapability: { type: "not_resumable", reason: "User input submitted" },
+              },
+            });
+            yield* emit({ type: "node.updated", driver: DSH_PROVIDER,
+              node: { ...question.node, status: cancelled ? "cancelled" : "completed",
+                completedAt: resolvedAt },
+            });
+            yield* emit({ type: "turn_item.updated", driver: DSH_PROVIDER,
+              turnItem: { ...question.item, status: cancelled ? "cancelled" : "completed",
+                completedAt: resolvedAt, updatedAt: resolvedAt },
+            });
+            question.resolve(response);
+            if (activeTurn && pendingQuestions.size + pendingApprovals.size === 0)
+              yield* setSession("running");
+            return;
+          }
           const pending = pendingApprovals.get(reply.requestId);
-          if (!pending) return yield* unsupported("DSH approval request is no longer pending");
+          if (!pending) return yield* unsupported("DSH request is no longer pending");
           pendingApprovals.delete(reply.requestId);
           const resolvedAt = yield* DateTime.now;
           const decision = reply.decision === "accept"
@@ -474,7 +603,8 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
             ...pending.item, status: "completed", completedAt: resolvedAt, updatedAt: resolvedAt,
           } });
           pending.resolve(decision);
-          if (activeTurn) yield* setSession("running");
+          if (activeTurn && pendingQuestions.size + pendingApprovals.size === 0)
+            yield* setSession("running");
         }),
         readThreadSnapshot: (args) => Effect.succeed({
           providerThread: args.providerThread, providerTurns: turns, messages, runtimeRequests: [],
