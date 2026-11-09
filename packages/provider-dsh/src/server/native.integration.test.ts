@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 import { fileURLToPath } from "node:url";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- SDK test fixture uses a native filesystem path.
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Test-only isolated directory suffix.
 import { randomUUID } from "node:crypto";
 
 import { NativeDshRuntime, type DshNativeOptions } from "./native.ts";
