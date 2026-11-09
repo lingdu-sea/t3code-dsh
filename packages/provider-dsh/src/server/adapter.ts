@@ -351,7 +351,7 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
             Effect.matchEffect({
               onFailure: (error) => finish(args, turn, "failed", "", error.message),
               onSuccess: (result) => finish(
-                args, turn, result.finishReason === "stop" || result.finishReason === "end" || result.finishReason === "completed" || result.finishReason === "success" ? "completed" : "failed",
+                args, turn, result.finishReason === "completed" ? "completed" : "failed",
                 result.finalResponse, result.finishReason ?? undefined,
               ),
             }),
