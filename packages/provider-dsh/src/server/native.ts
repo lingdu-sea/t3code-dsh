@@ -90,6 +90,12 @@ export class NativeDshRuntime {
     });
   }
 
+  /** Stable SDK identity for the T3 provider thread. */
+  createSessionId(): string {
+    if (this.closed) throw new Error("DSH runtime is closed.");
+    return this.harness.session().id;
+  }
+
   get isClosed(): boolean { return this.closed; }
   get isActive(): boolean { return this.active; }
 
