@@ -127,7 +127,7 @@ lines.on("line", (line) => {
   }
   if (method === "shutdown") {
     // Flush the JSON-RPC acknowledgement before ending the fake child.
-    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result: {} }) + "\\n",
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result: {} }) + "\n",
       () => process.exit(0));
     return;
   }
