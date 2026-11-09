@@ -32,6 +32,13 @@ jobs:
         run: pnpm --filter 't3' typecheck
       - name: Native provider unit tests
         run: pnpm --filter '@t3tools/provider-dsh' test
+      - name: Check genuine DSH SDK runtime handshake (no model request or credentials)
+        env:
+          T3_DSH_REAL_SMOKE: '1'
+          DEEPSEEK_API_KEY: ''
+          OPENAI_API_KEY: ''
+          ANTHROPIC_API_KEY: ''
+        run: pnpm --filter '@t3tools/provider-dsh' exec vp test run --config ../../vite.config.ts src/server/native.real-runtime.smoke.test.ts
       - name: Check dependency lockfile drift
         if: always()
         shell: bash
