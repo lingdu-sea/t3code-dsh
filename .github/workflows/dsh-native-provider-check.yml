@@ -1,0 +1,51 @@
+name: DSH native provider validation
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  provider:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.12.1'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '12.14.0'
+          run_install: false
+      - name: Install focused workspace dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Typecheck native provider
+        run: pnpm --filter '@t3tools/provider-dsh' typecheck
+      - name: Typecheck T3 shared client registry
+        run: pnpm --filter '@t3tools/client-runtime' typecheck
+      - name: Typecheck T3 server integration
+        run: pnpm --filter 't3' typecheck
+      - name: Native provider unit tests
+        run: pnpm --filter '@t3tools/provider-dsh' test
+      - name: Check genuine DSH SDK runtime handshake (no model request or credentials)
+        env:
+          T3_DSH_REAL_SMOKE: '1'
+          DEEPSEEK_API_KEY: ''
+          OPENAI_API_KEY: ''
+          ANTHROPIC_API_KEY: ''
+        run: pnpm --filter '@t3tools/provider-dsh' exec vp test run --config ../../vite.config.ts src/server/native.real-runtime.smoke.test.ts
+      - name: Check dependency lockfile drift
+        if: always()
+        shell: bash
+        run: |
+          if git diff --quiet -- pnpm-lock.yaml; then
+            echo 'Lockfile is current.'
+          else
+            echo '::error::pnpm-lock.yaml changed under frozen dependency resolution.'
+            exit 1
+          fi
