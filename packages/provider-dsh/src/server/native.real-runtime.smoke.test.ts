@@ -15,8 +15,8 @@ describe("DSH native runtime SDK profile — credential-free smoke", () => {
     const runtime = new NativeDshRuntime({
       home: join(tmpdir(), "dsh-profile-sdk-smoke-" + randomUUID()),
       cwd: process.cwd(),
-      provider: "offline-handshake-provider",
-      model: "offline-handshake-model",
+      provider: "deepseek-official",
+      model: "deepseek-v4-flash",
       env: {
         PATH: process.env.PATH ?? "",
         TMPDIR: process.env.TMPDIR ?? tmpdir(),
