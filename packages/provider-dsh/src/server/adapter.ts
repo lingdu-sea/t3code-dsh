@@ -472,8 +472,9 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
           return yield* unsupported("DSH session belongs to a different provider instance");
         // The persistence home must survive a newly allocated T3 providerSessionId.
         // Hash the thread identity: cross-platform, prevents path injection and shared homes.
-        const directory = createHash("sha256").update(String(args.threadId)).digest("hex");
-        const home = pathService.join(host.paths.stateDir, "dsh", String(options.instanceId), directory);
+        const instanceDirectory = createHash("sha256").update(String(options.instanceId)).digest("hex");
+        const threadDirectory = createHash("sha256").update(String(args.threadId)).digest("hex");
+        const home = pathService.join(host.paths.stateDir, "dsh", instanceDirectory, threadDirectory);
         yield* fs.makeDirectory(home, { recursive: true }).pipe(
           Effect.mapError(() => unsupported("Cannot create isolated DSH persistence directory")),
         );
