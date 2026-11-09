@@ -7,6 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as DateTime from "effect/DateTime";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
@@ -36,7 +37,8 @@ const decodeSettings = Schema.decodeSync(DshSettings);
 export type DshDriverEnv =
   | ProviderHost.ProviderHost
   | IdAllocator.IdAllocatorV2
-  | FileSystem.FileSystem;
+  | FileSystem.FileSystem
+  | Path.Path;
 
 const maintenance = {
   provider: DRIVER,
