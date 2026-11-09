@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { classifyDshTerminal, readNativeDshEvent } from "./nativeEvents.ts";
 
 const notification = (sessionId: string, event: unknown) => ({
