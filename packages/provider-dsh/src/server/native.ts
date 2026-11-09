@@ -17,6 +17,7 @@ import {
 export type DshApprovalDecision = "allowed-once" | "rejected" | "cancelled";
 
 export interface DshNativeOptions {
+  /** Absolute path to a built DSH Node CLI module (not a shell executable). */
   readonly binaryPath?: string;
   readonly home: string;
   readonly cwd: string;
@@ -79,6 +80,7 @@ export class NativeDshRuntime {
           ? this.callbacks.onQuestion(request, context)
           : { cancelled: true },
     });
+    // Install the approval handler before the initialize handshake.
     this.harness.client.start();
     this.harness.client.onRequest(async (method, params) => {
       if (method !== "approval/request") {
