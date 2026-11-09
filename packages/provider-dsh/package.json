@@ -3,10 +3,22 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./client": { "types": "./src/client.ts", "import": "./src/client.ts" },
-    "./settings": { "types": "./src/settings.ts", "import": "./src/settings.ts" },
-    "./server": { "types": "./src/server.ts", "import": "./src/server.ts" },
-    "./server/native": { "types": "./src/server/native.ts", "import": "./src/server/native.ts" }
+    "./client": {
+      "types": "./src/client.ts",
+      "import": "./src/client.ts"
+    },
+    "./settings": {
+      "types": "./src/settings.ts",
+      "import": "./src/settings.ts"
+    },
+    "./server": {
+      "types": "./src/server.ts",
+      "import": "./src/server.ts"
+    },
+    "./server/native": {
+      "types": "./src/server/native.ts",
+      "import": "./src/server/native.ts"
+    }
   },
   "scripts": {
     "typecheck": "effect-tsgo tsrs --noEmit",
@@ -16,10 +28,12 @@
     "@deepseek-ai/dsh-sdk-client": "0.2.2-rc.1",
     "@t3tools/contracts": "workspace:*",
     "@t3tools/provider-core": "workspace:*",
-    "effect": "catalog:"
+    "effect": "catalog:",
+    "@t3tools/shared": "workspace:*"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
-    "vite-plus": "catalog:"
+    "vite-plus": "catalog:",
+    "@types/node": "catalog:"
   }
 }
