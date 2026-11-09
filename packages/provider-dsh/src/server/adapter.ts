@@ -18,6 +18,8 @@ import * as Path from "effect/Path";
 import { createHash } from "node:crypto";
 import type { SdkUserQuestionRequest, SdkUserQuestionResult } from "@deepseek-ai/dsh-sdk-client";
 import { mapT3AnswersToDsh } from "./questionMapping.ts";
+import { readNativeDshEvent, classifyDshTerminal, type NativeDshEvent } from "./nativeEvents.ts";
+import type { HarnessNotification } from "@deepseek-ai/dsh-sdk-client";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -67,10 +69,10 @@ export const DSH_CAPABILITIES = {
     emitsMessageCompleted: true,
   },
   tools: {
-    exposesToolItemIds: false,
-    emitsToolStarted: false,
-    emitsToolCompleted: false,
-    emitsToolOutput: false,
+    exposesToolItemIds: true,
+    emitsToolStarted: true,
+    emitsToolCompleted: true,
+    emitsToolOutput: true,
     supportsMcpTools: false,
     supportsDynamicToolCallbacks: false,
   },
@@ -189,6 +191,126 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
       let requestOrdinal = 0;
       // Called from the native JSON-RPC host request handler. All human
       // approvals are one-shot, and no subagent approval is silently granted.
+      type ToolRecord = {
+        readonly itemId: ReturnType<typeof ids.derive.turnItemFromProviderItem>;
+        readonly nodeId: ReturnType<typeof ids.derive.nodeFromProviderItem>;
+        readonly nativeRef: { readonly driver: typeof DSH_PROVIDER; readonly nativeId: string; readonly strength: "strong" };
+        readonly startedAt: DateTime.Utc;
+        readonly name: string;
+        readonly arguments: string;
+        readonly ordinal: number;
+      };
+      const toolRecords = new Map<string, ToolRecord>();
+      let eventOrdinal = 0;
+      let assistantWasEmitted = false;
+      let nativeEventError: unknown = undefined;
+      let nativeEventChain: Promise<void> = Promise.resolve();
+      const processNativeEvent = (normalized: NativeDshEvent) => Effect.gen(function* () {
+        const owner = activeTurn;
+        const current = thread;
+        if (!owner || !current) return;
+        if (normalized.kind === "turn-end") return;
+        const timestamp = yield* DateTime.now;
+        if (normalized.kind === "tool-start") {
+          if (toolRecords.has(normalized.callId)) return;
+          const identity = String(options.instanceId) + ":" + String(current.id) + ":" + normalized.callId;
+          const record: ToolRecord = {
+            itemId: ids.derive.turnItemFromProviderItem({ driver: DSH_PROVIDER, nativeItemId: identity }),
+            nodeId: ids.derive.nodeFromProviderItem({ driver: DSH_PROVIDER, nativeItemId: identity }),
+            nativeRef: { driver: DSH_PROVIDER, nativeId: normalized.callId, strength: "strong" },
+            startedAt: timestamp, name: normalized.name, arguments: normalized.arguments,
+            ordinal: owner.args.providerTurnOrdinal * 100 + (++eventOrdinal),
+          };
+          toolRecords.set(normalized.callId, record);
+          yield* emit({ type: "node.updated", driver: DSH_PROVIDER, node: {
+            id: record.nodeId, threadId: owner.args.threadId, runId: owner.args.runId,
+            parentNodeId: owner.args.rootNodeId, rootNodeId: owner.args.rootNodeId,
+            kind: "tool_call", status: "running", countsForRun: false,
+            providerThreadId: current.id, providerTurnId: owner.turn.id,
+            nativeItemRef: record.nativeRef, runtimeRequestId: null, checkpointScopeId: null,
+            startedAt: timestamp, completedAt: null,
+          } });
+          yield* emit({ type: "turn_item.updated", driver: DSH_PROVIDER, turnItem: {
+            id: record.itemId, nodeId: record.nodeId,
+            threadId: owner.args.threadId, runId: owner.args.runId,
+            providerThreadId: current.id, providerTurnId: owner.turn.id,
+            nativeItemRef: record.nativeRef, parentItemId: null,
+            ordinal: record.ordinal, startedAt: timestamp, updatedAt: timestamp,
+            status: "running", completedAt: null, title: record.name,
+            type: "dynamic_tool", toolName: record.name, input: record.arguments,
+          } });
+          return;
+        }
+        if (normalized.kind === "tool-end") {
+          const record = toolRecords.get(normalized.callId);
+          if (!record) return;
+          const status = normalized.isError ? "failed" as const : "completed" as const;
+          yield* emit({ type: "node.updated", driver: DSH_PROVIDER, node: {
+            id: record.nodeId, threadId: owner.args.threadId, runId: owner.args.runId,
+            parentNodeId: owner.args.rootNodeId, rootNodeId: owner.args.rootNodeId,
+            kind: "tool_call", status, countsForRun: false,
+            providerThreadId: current.id, providerTurnId: owner.turn.id,
+            nativeItemRef: record.nativeRef, runtimeRequestId: null, checkpointScopeId: null,
+            startedAt: record.startedAt, completedAt: timestamp,
+          } });
+          yield* emit({ type: "turn_item.updated", driver: DSH_PROVIDER, turnItem: {
+            id: record.itemId, nodeId: record.nodeId,
+            threadId: owner.args.threadId, runId: owner.args.runId,
+            providerThreadId: current.id, providerTurnId: owner.turn.id,
+            nativeItemRef: record.nativeRef, parentItemId: null, ordinal: record.ordinal,
+            startedAt: record.startedAt, updatedAt: timestamp,
+            status, completedAt: timestamp, title: record.name,
+            type: "dynamic_tool", toolName: record.name, input: record.arguments,
+            output: normalized.text,
+          } });
+          toolRecords.delete(normalized.callId);
+          return;
+        }
+        if (normalized.kind === "assistant" && normalized.text.trim()) {
+          assistantWasEmitted = true;
+          const identity = String(options.instanceId) + ":" + String(current.id) + ":assistant:" + normalized.key;
+          const messageId = ids.derive.messageFromProviderItem({ driver: DSH_PROVIDER, nativeItemId: identity });
+          const nodeId = ids.derive.nodeFromProviderItem({ driver: DSH_PROVIDER, nativeItemId: identity });
+          const message: OrchestrationV2ConversationMessage = {
+            id: messageId, threadId: owner.args.threadId, runId: owner.args.runId,
+            nodeId, role: "assistant", text: normalized.text,
+            attachments: [], streaming: false, createdBy: "agent", creationSource: "provider",
+            createdAt: timestamp, updatedAt: timestamp,
+          };
+          messages.push(message);
+          yield* emit({ type: "message.updated", driver: DSH_PROVIDER, message });
+          yield* emit({ type: "node.updated", driver: DSH_PROVIDER, node: {
+            id: nodeId, threadId: owner.args.threadId, runId: owner.args.runId,
+            parentNodeId: owner.args.rootNodeId, rootNodeId: owner.args.rootNodeId,
+            kind: "assistant_message", status: "completed", countsForRun: false,
+            providerThreadId: current.id, providerTurnId: owner.turn.id,
+            nativeItemRef: null, runtimeRequestId: null, checkpointScopeId: null,
+            startedAt: timestamp, completedAt: timestamp,
+          } });
+          yield* emit({ type: "turn_item.updated", driver: DSH_PROVIDER, turnItem: {
+            id: ids.derive.turnItemFromProviderItem({ driver: DSH_PROVIDER, nativeItemId: identity }),
+            nodeId, threadId: owner.args.threadId, runId: owner.args.runId,
+            providerThreadId: current.id, providerTurnId: owner.turn.id,
+            nativeItemRef: null, parentItemId: null,
+            ordinal: owner.args.providerTurnOrdinal * 100 + (++eventOrdinal),
+            startedAt: timestamp, updatedAt: timestamp, status: "completed", completedAt: timestamp,
+            title: null, type: "assistant_message",
+            messageId, text: normalized.text, streaming: false,
+          } });
+        }
+      });
+      const onNotification = (notification: HarnessNotification): void => {
+        if (!nativeId) return;
+        const normalized = readNativeDshEvent(notification, nativeId);
+        if (!normalized) return;
+        // Serializes dependent tool-start/tool-result events and ensures the
+        // terminal waits for projection. A conversion failure fails the turn.
+        nativeEventChain = nativeEventChain.then(() =>
+          Effect.runPromise(processNativeEvent(normalized)),
+        ).catch((error: unknown) => {
+          nativeEventError = error;
+        });
+      };
       const onApproval = async (incoming: DshApprovalRequest): Promise<DshApprovalDecision> => {
         const owner = activeTurn;
         const currentThread = thread;
@@ -359,7 +481,7 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
           model: args.modelSelection.model === "default"
             ? options.settings.model : args.modelSelection.model,
           env: options.environment,
-        }, { onApproval, onQuestion });
+        }, { onApproval, onQuestion, onNotification });
         yield* Effect.tryPromise({
           try: () => native!.start(),
           catch: (cause) => unsupported("Could not initialize DSH native SDK"),
@@ -403,7 +525,7 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
       ) {
         if (!thread) return;
         const ended = yield* DateTime.now;
-        if (answer) {
+        if (answer && !assistantWasEmitted) {
           const identity = options.instanceId + ":" + nativeId + ":" + turn.id + ":answer";
           const messageId = ids.derive.messageFromProviderItem({ driver: DSH_PROVIDER, nativeItemId: identity });
           const itemId = ids.derive.turnItemFromProviderItem({ driver: DSH_PROVIDER, nativeItemId: identity });
@@ -533,6 +655,9 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
             ordinal: args.providerTurnOrdinal, status: "running",
             startedAt: timestamp, completedAt: null,
           };
+          assistantWasEmitted = false;
+          nativeEventError = undefined;
+          toolRecords.clear();
           activeTurn = { args, turn };
           yield* emit({ type: "provider_turn.updated", driver: DSH_PROVIDER, threadId: args.threadId, providerTurn: turn });
           thread = { ...thread, status: "active",
@@ -541,13 +666,18 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
           yield* emit({ type: "provider_thread.updated", driver: DSH_PROVIDER, providerThread: thread });
           yield* setSession("running");
           yield* Effect.tryPromise({
-            try: () => native!.run(nativeId!, args.message.text),
-            catch: (cause) => unsupported("DSH native execution failed"),
+            try: async () => {
+              const result = await native!.run(nativeId!, args.message.text);
+              await nativeEventChain;
+              if (nativeEventError !== undefined) throw new Error("DSH event projection failed");
+              return result;
+            },
+            catch: () => unsupported("DSH native execution or event projection failed"),
           }).pipe(
             Effect.matchEffect({
               onFailure: (error) => finish(args, turn, "failed", "", error.message),
               onSuccess: (result) => finish(
-                args, turn, result.finishReason === "completed" ? "completed" : "failed",
+                args, turn, classifyDshTerminal(result.finishReason) === "completed" ? "completed" : "failed",
                 result.finalResponse, result.finishReason ?? undefined,
               ),
             }),
