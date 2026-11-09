@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - feat/dsh-native-provider
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
