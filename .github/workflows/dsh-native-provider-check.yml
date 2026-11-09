@@ -1,9 +1,6 @@
 name: DSH native provider validation
 
 on:
-  push:
-    branches:
-      - feat/dsh-native-provider
   pull_request:
     branches:
       - main
@@ -26,7 +23,7 @@ jobs:
           version: '12.14.0'
           run_install: false
       - name: Install focused workspace dependencies
-        run: pnpm install --frozen-lockfile --ignore-scripts --filter '@t3tools/provider-dsh...' --filter '@t3tools/client-runtime...' --filter 't3...' 
+        run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Typecheck native provider
         run: pnpm --filter '@t3tools/provider-dsh' typecheck
       - name: Typecheck T3 shared client registry
