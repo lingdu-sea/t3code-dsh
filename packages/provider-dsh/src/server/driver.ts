@@ -11,6 +11,7 @@ import * as Option from "effect/Option";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as FileSystem from "effect/FileSystem";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
@@ -42,7 +43,9 @@ export type DshDriverEnv =
   | ProviderHost.ProviderHost
   | IdAllocator.IdAllocatorV2
   | FileSystem.FileSystem
-  | ChildProcessSpawner.ChildProcessSpawner;
+  | ChildProcessSpawner.ChildProcessSpawner
+  | HostProcess.HomeDirectory
+  | HostProcess.Platform;
 
 const maintenance = {
   provider: DRIVER,
@@ -88,8 +91,10 @@ export const DshDriver: ProviderDriver<DshSettings, DshDriverEnv> = {
     const host = yield* ProviderHost.ProviderHost;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const settings = { ...config, enabled } satisfies DshSettings;
-    const env = yield* mergeProviderInstanceEnvironment(environment);
-    const explicitlyBound = new Set(environment.map((variable) => variable.name));
+    // mergeProviderInstanceEnvironment returns process.env itself when no overrides
+    // exist. Clone before stripping inherited credentials, never mutate the host.
+    const env = { ...(yield* mergeProviderInstanceEnvironment(environment)) };
+    const explicitlyBound = new Set(environment.map((variable) => variable.name.toUpperCase()));
     // A DSH instance must not silently inherit credentials from another provider.
     for (const key of ["DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"]) {
       if (!explicitlyBound.has(key)) delete env[key];
