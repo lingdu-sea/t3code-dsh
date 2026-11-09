@@ -8,14 +8,24 @@
 
 | Level | What it proves | Status |
 | --- | --- | --- |
-| L0 — Type safety | T3 server/client + DSH Provider compile under exact frozen dependencies | PASS |
-| L1 — Protocol transport | Published SDK launches offline fixture subprocess, exchanges JSON-RPC events, handles approval/timeout/crash/close | PASS: 20 tests in 4 files (10 original + 10 offline-process integration) |
-| L2 — T3 adapter E2E | T3 runtime/Orchestration receives correct SDK lifecycle, UI messages, tool requests/responses, failures, replay | NOT VERIFIED |
-| L3 — Live DSH model | SDK launches actual DSH profile, authorizes a real model route, performs a bounded inference and safe tool task | NOT VERIFIED |
-| L4 — Multi-user safety | Two users + multiple provider instances stay strictly isolated; audit and permissions are enforcement tested | NOT VERIFIED |
-| L5 — Release | Full build, regression, adversarial tests, owner approval and rollback mechanism | NOT VERIFIED |
+| L0 — Type safety | T3 server/client + DSH Provider compile under exact frozen dependencies | **PASS** |
+| L1 — SDK protocol | The published SDK can exchange events/approvals/questions with a real child process using an offline fixture; actual SDK-shipped DSH runtime starts and closes without model credentials | **PASS** |
+| L2a — T3 adapter event link | T3 ProviderAdapterV2 receives SDK messages, tool traces, permission requests and structured questions, and correctly reports crash/instance-separated events | **PASS (offline test)** |
+| L2b — T3 storage/UI E2E | Browser operation, database persistence, replay and UI controls work with the provider in the actual T3 server | **NOT VERIFIED** |
+| L3 — Live DSH model | SDK launches the actual DSH profile, authorizes a model route, performs a bounded model inference and a safe tool task | **NOT VERIFIED** |
+| L4 — Multi-user safety | Two authenticated users with separate permissions/credentials remain isolated in the running platform | **NOT VERIFIED** |
+| L5 — Release | Full build, regression, adversarial tests, owner approval and rollback mechanism | **NOT VERIFIED** |
 
-CI evidence: [DSH native provider validation, 20 passing tests](https://github.com/lingdu-sea/t3code-dsh/actions/runs/42588768896).
+Verified CI evidence:
+- [T3 adapter and inherited-environment tests — 6 files, 29 passing](https://github.com/lingdu-sea/t3code-dsh/actions/runs/42590428012)
+- [Actual SDK-shipped DSH runtime handshake, no model requests or secrets](https://github.com/lingdu-sea/t3code-dsh/actions/runs/42591067899)
+- The actual-runtime handshake deliberately uses registered provider `deepseek-official` and model ID `deepseek-v4-flash`; the initial attempt with the fake route was rejected as expected. No generated output or model authorization is implied.
+
+### Security findings from this iteration
+
+- **P0 prevented:** The initial driver forwarded all inherited T3 server environment variables except a small key list. It now supplies only a minimal launch-variable allowlist to the DSH SDK subprocess, and merges deliberately bound Provider-instance variables separately. Tests verify that GitHub, AWS, database, model secrets and `NODE_OPTIONS` are not implicitly forwarded.
+- Persistence subdirectories now hash **both Provider-instance and thread IDs** rather than including their external spellings as paths.
+- These changes prevent environment leak by ordinary inheritance and path traversal by ID; they **do not** establish a tenant security boundary. A DSH child still runs with the T3 server's underlying OS identity and may access its filesystem. Strong multi-user isolation needs separate OS/container identities, filesystem scoping, access controls and integration tests.
 
 ## Preconditions for live validation
 
