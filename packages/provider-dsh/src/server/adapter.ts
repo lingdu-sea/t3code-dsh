@@ -10,6 +10,8 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import { createHash } from "node:crypto";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -127,6 +129,7 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
   const host = yield* ProviderHost.ProviderHost;
   const ids = yield* IdAllocator.IdAllocatorV2;
   const fs = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
   const unsupported = (detail: string) => new ProviderAdapter.ProviderAdapterProtocolError({
     driver: DSH_PROVIDER, detail,
   });
@@ -180,8 +183,13 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
           (args.existingProviderThread.driver !== DSH_PROVIDER ||
            args.existingProviderThread.providerInstanceId !== options.instanceId))
           return yield* unsupported("DSH session belongs to a different provider instance");
-        const home = host.paths.stateDir + "/dsh/" + options.instanceId + "/" + input.providerSessionId;
-        yield* fs.makeDirectory(home, { recursive: true });
+        // The persistence home must survive a newly allocated T3 providerSessionId.
+        // Hash the thread identity: cross-platform, prevents path injection and shared homes.
+        const directory = createHash("sha256").update(String(args.threadId)).digest("hex");
+        const home = pathService.join(host.paths.stateDir, "dsh", String(options.instanceId), directory);
+        yield* fs.makeDirectory(home, { recursive: true }).pipe(
+          Effect.mapError(() => unsupported("Cannot create isolated DSH persistence directory")),
+        );
         native = new NativeDshRuntime({
           binaryPath: options.settings.binaryPath,
           home, cwd, provider: options.settings.provider,
@@ -205,7 +213,7 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
         const timestamp = yield* DateTime.now;
         thread = existing
           ? { ...existing, providerSessionId: input.providerSessionId,
-              nativeThreadRef: { nativeId, strength: "strong" },
+              nativeThreadRef: { driver: DSH_PROVIDER, nativeId, strength: "strong" },
               status: "idle", updatedAt: timestamp }
           : {
               id: ids.derive.providerThread({
@@ -343,7 +351,7 @@ export const makeDshAdapterV2 = Effect.fn("makeDshAdapterV2")(function* (
             Effect.matchEffect({
               onFailure: (error) => finish(args, turn, "failed", "", error.message),
               onSuccess: (result) => finish(
-                args, turn, result.finishReason === "error" ? "failed" : "completed",
+                args, turn, result.finishReason === "stop" || result.finishReason === "end" || result.finishReason === "completed" || result.finishReason === "success" ? "completed" : "failed",
                 result.finalResponse, result.finishReason ?? undefined,
               ),
             }),
