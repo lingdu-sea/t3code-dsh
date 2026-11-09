@@ -1,0 +1,43 @@
+name: DSH lockfile synchronization
+
+on:
+  push:
+    branches:
+      - feat/dsh-native-provider
+
+permissions:
+  contents: write
+
+jobs:
+  update-lockfile:
+    if: github.repository == 'lingdu-sea/t3code-dsh' && github.ref == 'refs/heads/feat/dsh-native-provider'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.12.1'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '12.14.0'
+          run_install: false
+      - name: Regenerate only the deterministic pnpm lockfile
+        run: pnpm install --lockfile-only --ignore-scripts
+      - name: Verify frozen dependency resolution
+        run: pnpm install --lockfile-only --frozen-lockfile --ignore-scripts
+      - name: Commit lockfile to the feature branch only
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- pnpm-lock.yaml; then
+            echo 'Dependency lockfile already synchronized.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- pnpm-lock.yaml
+          git commit -m 'chore(dsh): synchronize pnpm lockfile for native SDK provider'
+          git push origin HEAD:refs/heads/feat/dsh-native-provider
