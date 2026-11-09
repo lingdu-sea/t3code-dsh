@@ -7,7 +7,6 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as DateTime from "effect/DateTime";
 import * as FileSystem from "effect/FileSystem";
-import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
@@ -37,9 +36,7 @@ const decodeSettings = Schema.decodeSync(DshSettings);
 export type DshDriverEnv =
   | ProviderHost.ProviderHost
   | IdAllocator.IdAllocatorV2
-  | FileSystem.FileSystem
-  | HostProcess.HomeDirectory
-  | HostProcess.Platform;
+  | FileSystem.FileSystem;
 
 const maintenance = {
   provider: DRIVER,
@@ -83,6 +80,7 @@ export const DshDriver: ProviderDriver<DshSettings, DshDriverEnv> = {
     instanceId, displayName, accentColor, environment, enabled, config,
   }) {
     const host = yield* ProviderHost.ProviderHost;
+    const fs = yield* FileSystem.FileSystem;
     const settings = { ...config, enabled } satisfies DshSettings;
     // mergeProviderInstanceEnvironment returns process.env itself when no overrides
     // exist. Clone before stripping inherited credentials, never mutate the host.
@@ -99,8 +97,10 @@ export const DshDriver: ProviderDriver<DshSettings, DshDriverEnv> = {
       instanceId, driverKind: DRIVER, displayName, accentColor,
       continuationGroupKey: continuationIdentity.continuationKey,
     });
-    const snapshotFor = (installed: boolean, version: string | null, status: "warning" | "ready" | "error", message: string) =>
-      Effect.gen(function* () {
+    const snapshotFor = Effect.fn("DshDriver.snapshotFor")(function* (
+      installed: boolean, version: string | null,
+      status: "warning" | "ready" | "error", message: string,
+    ) {
         return stamp(buildServerProvider({
           presentation: {
             displayName: "DeepSeek Harness",
@@ -117,7 +117,7 @@ export const DshDriver: ProviderDriver<DshSettings, DshDriverEnv> = {
             message,
           },
         }));
-      });
+    });
     const checkProvider = Effect.gen(function* () {
       if (!settings.enabled) {
         return yield* snapshotFor(false, null, "warning", "DSH is disabled.");
@@ -125,13 +125,10 @@ export const DshDriver: ProviderDriver<DshSettings, DshDriverEnv> = {
       // A CLI --version check is insufficient: the SDK ships its own
       // same-version Node entry, while binaryPath is an optional module path.
       // Use a separate probe home so real sessions remain untouched.
-      const fileSystem = yield* FileSystem.FileSystem;
       const probeHome = host.paths.stateDir + "/dsh/probe/" + instanceId;
-      yield* fileSystem.makeDirectory(probeHome, { recursive: true }).pipe(
-        Effect.mapError((cause) => new ProviderDriverError({
-          driver: DRIVER, instanceId, detail: "Cannot create DSH SDK probe directory", cause,
-        })),
-      );
+      const homeResult = yield* fs.makeDirectory(probeHome, { recursive: true }).pipe(Effect.result);
+      if (homeResult._tag === "Failure")
+        return yield* snapshotFor(false, null, "error", "Cannot create DSH SDK probe directory.");
       const probe = yield* Effect.tryPromise({
         try: async () => {
           let runtime: NativeDshRuntime | undefined;
