@@ -1,0 +1,39 @@
+name: DSH native provider validation
+
+on:
+  push:
+    branches:
+      - feat/dsh-native-provider
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  provider:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.12.1'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '12.14.0'
+          run_install: false
+      - name: Install focused workspace dependencies
+        run: pnpm install --no-frozen-lockfile --ignore-scripts --filter '@t3tools/provider-dsh...' --filter '@t3tools/monorepo'
+      - name: Typecheck native provider
+        run: pnpm --filter '@t3tools/provider-dsh' typecheck
+      - name: Native provider unit tests
+        run: pnpm --filter '@t3tools/provider-dsh' test
+      - name: Check dependency lockfile drift
+        if: always()
+        shell: bash
+        run: |
+          if git diff --quiet -- pnpm-lock.yaml; then
+            echo 'Lockfile is current.'
+          else
+            echo '::warning::pnpm-lock.yaml needs regeneration and commit before merging.'
+          fi
