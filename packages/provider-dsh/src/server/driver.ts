@@ -31,6 +31,7 @@ import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textG
 import { DshSettings } from "../settings.ts";
 import { makeDshAdapterV2 } from "./adapter.ts";
 import { NativeDshRuntime } from "./native.ts";
+import { inheritedDshLaunchEnvironment } from "./isolatedEnvironment.ts";
 
 const DRIVER = ProviderDriverKind.make("dsh");
 const decodeSettings = Schema.decodeSync(DshSettings);
@@ -84,14 +85,13 @@ export const DshDriver: ProviderDriver<DshSettings, DshDriverEnv> = {
     const host = yield* ProviderHost.ProviderHost;
     const fs = yield* FileSystem.FileSystem;
     const settings = { ...config, enabled } satisfies DshSettings;
-    // mergeProviderInstanceEnvironment returns process.env itself when no overrides
-    // exist. Clone before stripping inherited credentials, never mutate the host.
-    const env = { ...(yield* mergeProviderInstanceEnvironment(environment)) };
-    const explicitlyBound = new Set(environment.map((variable) => variable.name.toUpperCase()));
-    // A DSH instance must not silently inherit credentials from another provider.
-    for (const key of ["DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"]) {
-      if (!explicitlyBound.has(key)) delete env[key];
-    }
+    // Never forward the full T3 server environment to the agent child.
+    // Only explicit Provider-instance bindings may supply credentials.
+    // This is defense in depth, not filesystem or tenant isolation.
+    const env = yield* mergeProviderInstanceEnvironment(
+      environment,
+      inheritedDshLaunchEnvironment(process.env),
+    );
     const continuationIdentity = defaultProviderContinuationIdentity({
       driverKind: DRIVER, instanceId,
     });
