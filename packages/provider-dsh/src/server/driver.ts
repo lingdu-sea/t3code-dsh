@@ -6,10 +6,6 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as DateTime from "effect/DateTime";
-import * as Result from "effect/Result";
-import * as Option from "effect/Option";
-import * as ChildProcess from "effect/process/ChildProcess";
-import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as FileSystem from "effect/FileSystem";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
@@ -24,9 +20,7 @@ import {
 } from "@t3tools/provider-core/server/snapshotSettings";
 import {
   buildServerProvider,
-  parseGenericCliVersion,
   providerModelsFromSettings,
-  spawnAndCollect,
 } from "@t3tools/provider-core/server/snapshotProbe";
 import {
   defaultProviderContinuationIdentity,
@@ -36,6 +30,7 @@ import {
 import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
 import { DshSettings } from "../settings.ts";
 import { makeDshAdapterV2 } from "./adapter.ts";
+import { NativeDshRuntime } from "./native.ts";
 
 const DRIVER = ProviderDriverKind.make("dsh");
 const decodeSettings = Schema.decodeSync(DshSettings);
@@ -43,7 +38,6 @@ export type DshDriverEnv =
   | ProviderHost.ProviderHost
   | IdAllocator.IdAllocatorV2
   | FileSystem.FileSystem
-  | ChildProcessSpawner.ChildProcessSpawner
   | HostProcess.HomeDirectory
   | HostProcess.Platform;
 
@@ -89,7 +83,6 @@ export const DshDriver: ProviderDriver<DshSettings, DshDriverEnv> = {
     instanceId, displayName, accentColor, environment, enabled, config,
   }) {
     const host = yield* ProviderHost.ProviderHost;
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const settings = { ...config, enabled } satisfies DshSettings;
     // mergeProviderInstanceEnvironment returns process.env itself when no overrides
     // exist. Clone before stripping inherited credentials, never mutate the host.
@@ -129,27 +122,42 @@ export const DshDriver: ProviderDriver<DshSettings, DshDriverEnv> = {
       if (!settings.enabled) {
         return yield* snapshotFor(false, null, "warning", "DSH is disabled.");
       }
-      const probe = yield* spawnAndCollect(settings.binaryPath,
-        ChildProcess.make(settings.binaryPath, ["--version"], {
-          env, cwd: host.paths.cwd,
-        })).pipe(
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-          Effect.timeoutOption(5_000),
-          Effect.result,
-        );
-      if (Result.isFailure(probe)) {
-        return yield* snapshotFor(false, null, "error", "DSH executable is unavailable or its version probe failed.");
+      // A CLI --version check is insufficient: the SDK ships its own
+      // same-version Node entry, while binaryPath is an optional module path.
+      // Use a separate probe home so real sessions remain untouched.
+      const fileSystem = yield* FileSystem.FileSystem;
+      const probeHome = host.paths.stateDir + "/dsh/probe/" + instanceId;
+      yield* fileSystem.makeDirectory(probeHome, { recursive: true }).pipe(
+        Effect.mapError((cause) => new ProviderDriverError({
+          driver: DRIVER, instanceId, detail: "Cannot create DSH SDK probe directory", cause,
+        })),
+      );
+      const probe = yield* Effect.tryPromise({
+        try: async () => {
+          let runtime: NativeDshRuntime | undefined;
+          try {
+            runtime = new NativeDshRuntime({
+              ...(settings.binaryPath ? { binaryPath: settings.binaryPath } : {}),
+              home: probeHome, cwd: host.paths.cwd, env,
+              provider: settings.provider, model: settings.model,
+            });
+            await runtime.start();
+          } finally {
+            await runtime?.close();
+          }
+        },
+        catch: (cause) => new ProviderDriverError({
+          driver: DRIVER, instanceId,
+          detail: "DSH SDK runtime handshake failed", cause,
+        }),
+      }).pipe(Effect.timeoutOption(16_000), Effect.result);
+      if (probe._tag === "Failure") {
+        return yield* snapshotFor(false, null, "error", "DSH SDK handshake failed; check installation, model route and credentials.");
       }
-      if (Option.isNone(probe.success)) {
-        return yield* snapshotFor(false, null, "error", "DSH version probe timed out.");
+      if (probe.success._tag === "None") {
+        return yield* snapshotFor(false, null, "error", "DSH SDK initialization timed out.");
       }
-      const output = probe.success.value;
-      const version = parseGenericCliVersion(output.stdout + "\n" + output.stderr);
-      return yield* snapshotFor(output.code === 0, version,
-        output.code === 0 ? "ready" : "error",
-        output.code === 0
-          ? "DSH CLI detected. Runtime model authentication is verified on first session."
-          : "DSH version command returned a nonzero status.");
+      return yield* snapshotFor(true, null, "ready", "DSH SDK handshake succeeded; model inference and account authorization are not yet verified.");
     });
     const snapshotSettings = yield* makeProviderSnapshotSettingsSource(settings);
     const managed = yield* makeManagedServerProvider({
